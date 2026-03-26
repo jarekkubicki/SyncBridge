@@ -1,4 +1,4 @@
-﻿function json(res, statusCode, payload) {
+function json(res, statusCode, payload) {
   res.status(statusCode);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,6 +20,16 @@ function parseGid(url) {
 function normalizeColumnName(value, index) {
   const trimmed = String(value || '').trim();
   return trimmed || `Column ${index + 1}`;
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
 }
 
 function rowsToObjects(values) {
@@ -72,40 +82,99 @@ function parseGvizResponse(text) {
   return rowsToObjects([headers, ...matrix]);
 }
 
-async function fetchSheetData(spreadsheetId, gid, worksheet) {
-  const baseUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json`;
-  const url = worksheet
-    ? `${baseUrl}&sheet=${encodeURIComponent(worksheet)}`
-    : `${baseUrl}&gid=${encodeURIComponent(gid || '0')}`;
-
+async function fetchSpreadsheetHtml(spreadsheetId) {
+  const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?usp=sharing`;
   const response = await fetch(url, {
     method: 'GET',
     headers: {
-      Accept: 'text/plain, application/json;q=0.9, */*;q=0.8',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     },
   });
 
   if (!response.ok) {
-    throw new Error(`Google returned HTTP ${response.status}`);
+    throw new Error(`Google HTML returned HTTP ${response.status}`);
   }
 
-  const text = await response.text();
-  const { columns, rows } = parseGvizResponse(text);
-  const worksheetName = worksheet || (gid ? `gid:${gid}` : 'Sheet1');
+  return response.text();
+}
+
+function parseWorksheetSummariesFromHtml(html, selectedWorksheetName) {
+  const tabRegex = /docs-sheet-tab-caption">([^<]+)</g;
+  const names = [];
+  let match;
+
+  while ((match = tabRegex.exec(html)) !== null) {
+    const name = decodeHtmlEntities(match[1]);
+    if (name && !names.includes(name)) {
+      names.push(name);
+    }
+  }
+
+  if (names.length === 0) {
+    return [];
+  }
+
+  const normalizedSelected = String(selectedWorksheetName || '').trim().toLowerCase();
+  return names.map((name, index) => ({
+    name,
+    rowCount: 0,
+    columnCount: 0,
+    isDefault: normalizedSelected ? name.trim().toLowerCase() === normalizedSelected : index === 0,
+  }));
+}
+
+async function fetchSheetData(spreadsheetId, gid, worksheet) {
+  const [html, gvizText] = await Promise.all([
+    fetchSpreadsheetHtml(spreadsheetId),
+    (async () => {
+      const baseUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json`;
+      const url = worksheet
+        ? `${baseUrl}&sheet=${encodeURIComponent(worksheet)}`
+        : `${baseUrl}&gid=${encodeURIComponent(gid || '0')}`;
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/plain, application/json;q=0.9, */*;q=0.8',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Google returned HTTP ${response.status}`);
+      }
+
+      return response.text();
+    })(),
+  ]);
+
+  const { columns, rows } = parseGvizResponse(gvizText);
+  const worksheets = parseWorksheetSummariesFromHtml(html, worksheet);
+  const fallbackWorksheetName = worksheet || (worksheets[0] ? worksheets[0].name : (gid ? `gid:${gid}` : 'Sheet1'));
+  const worksheetName = worksheet || fallbackWorksheetName;
+
+  const normalizedWorksheetName = worksheetName.trim().toLowerCase();
+  const normalizedWorksheets = worksheets.length > 0
+    ? worksheets.map((item) => ({
+        ...item,
+        rowCount: item.name.trim().toLowerCase() === normalizedWorksheetName ? rows.length : item.rowCount,
+        columnCount: item.name.trim().toLowerCase() === normalizedWorksheetName ? columns.length : item.columnCount,
+        isDefault: item.name.trim().toLowerCase() === normalizedWorksheetName,
+      }))
+    : [
+        {
+          name: worksheetName,
+          rowCount: rows.length,
+          columnCount: columns.length,
+          isDefault: true,
+        },
+      ];
 
   return {
-    spreadsheetTitle: spreadsheetId,
+    spreadsheetTitle: decodeHtmlEntities((html.match(/<meta property="og:title" content="([^"]+)"/) || [])[1]) || spreadsheetId,
     worksheetName,
     columns,
     rows,
-    worksheets: [
-      {
-        name: worksheetName,
-        rowCount: rows.length,
-        columnCount: columns.length,
-        isDefault: true,
-      },
-    ],
+    worksheets: normalizedWorksheets,
   };
 }
 
