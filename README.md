@@ -117,3 +117,5 @@ Po zmianie manifestu usuń i dodaj plugin developerski ponownie w Figma.
 - przy pracy przez `gid` nazwa worksheetu może być techniczna, np. `gid:0`
 
 To jest celowo najprostszy możliwy wariant startowy.
+
+initial deploy trigger
