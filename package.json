@@ -1,0 +1,12 @@
+﻿{
+  "name": "syncbridge-vercel-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}
